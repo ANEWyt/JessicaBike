@@ -23,7 +23,7 @@ body{
   75%{transform:translate(1px,1px)}
 }
 @media(prefers-reduced-motion:reduce){.video-box.revving{animation:none}}
-video{width:100%;height:100%;object-fit:contain;display:block}
+video{width:100%;height:100%;object-fit:contain;display:block;pointer-events:none}
 .heat-meter{width:min(420px,80vw);display:grid;grid-template-columns:1fr auto;align-items:center;gap:8px 12px}
 .heat-label{font-size:12px;font-weight:bold;color:#aaa}
 #heat-value{font-size:12px;font-variant-numeric:tabular-nums;color:#f2c94c}
@@ -69,13 +69,15 @@ video{width:100%;height:100%;object-fit:contain;display:block}
 <body>
 
 <div class="video-box">
-  <video id="bike" src="bike.mp4" preload="auto" playsinline></video>
+  <video id="bike" src="bike.mp4" preload="auto" playsinline muted tabindex="-1" draggable="false" disablepictureinpicture disableremoteplayback></video>
 </div>
 <audio id="idleSound" src="idle.wav" preload="auto" loop></audio>
 <audio id="startSound" src="start.wav" preload="auto"></audio>
-<audio id="loopSound" src="Loop.wav" preload="auto" loop></audio>
+<audio id="loopSound" src="Loop.wav" preload="auto"></audio>
+<audio id="loopSoundAlt" src="Loop.wav" preload="auto"></audio>
 <audio id="releaseSound" src="sam.wav" preload="auto"></audio>
 <audio id="selfSound" src="sam02.wav" preload="auto"></audio>
+<audio id="selfSoundAlt" src="sam02.wav" preload="auto"></audio>
 <audio id="audio02" src="audio02.mp3" preload="auto"></audio>
 
 <div class="heat-meter">
@@ -106,16 +108,23 @@ const rpmValue = document.getElementById("rpm-value");
 const idleSound = document.getElementById("idleSound");
 const startSound = document.getElementById("startSound");
 const loopSound = document.getElementById("loopSound");
+const loopSoundAlt = document.getElementById("loopSoundAlt");
 const releaseSound = document.getElementById("releaseSound");
 const selfButton = document.getElementById("self-start");
 const selfSound = document.getElementById("selfSound");
+const selfSoundAlt = document.getElementById("selfSoundAlt");
 const audio02 = document.getElementById("audio02");
 
 const START_END = 1.59;
 const LOOP_START = 2.1;
 const LOOP_END = 2.4;
 const RELEASE_START = 3.93;
-const SELF_VIDEO_LOOP_END = 0.3;
+const SELF_VIDEO_LOOP_END = 0.9;
+const AUDIO_MASTER_VOLUME = 0.9;
+const AUDIO_CROSSFADE_MS = 160;
+const LOOP_CROSSFADE_MS = 350;
+const START_LOOP_OVERLAP_MS = 3;
+const sounds = [idleSound, startSound, loopSound, loopSoundAlt, releaseSound, selfSound, selfSoundAlt, audio02];
 
 let holding = false;
 let mode = "idle";
@@ -129,38 +138,170 @@ let overheated = false;
 let selfHolding = false;
 let selfStarted = false;
 let engineRunning = false;
+let selfCueComplete = false;
 
 video.pause();
 video.currentTime = 0;
 video.muted = true;
 button.disabled = true;
 
-function playSound(sound){
-  if(overheated) return;
-  sound.currentTime = 0;
-  sound.play().catch(()=>{});
-}
+let audioTransition = 0;
+let loopActive = loopSound;
+let loopStandby = loopSoundAlt;
+let loopFadeStarted = false;
 
-function stopSound(sound){
-  sound.pause();
-  sound.currentTime = 0;
-}
+function crossfadeTo(sound, duration = AUDIO_CROSSFADE_MS){
+  loopFadeStarted = false;
+  const transition = ++audioTransition;
+  const startedAt = performance.now();
+  const startingVolumes = sounds.map(item => item.paused ? 0 : Math.min(AUDIO_MASTER_VOLUME, item.volume));
+  sounds.forEach((item, index)=>{ item.volume = startingVolumes[index]; });
 
-startSound.addEventListener("ended", ()=>{
-  if(holding && !overheated) playSound(loopSound);
-});
-releaseSound.addEventListener("ended", ()=>{
-  if(!holding && !overheated) playSound(idleSound);
-});
-selfSound.addEventListener("ended", ()=>{
-  if(selfHolding && !overheated) playSound(selfSound);
-  else if(selfStarted && !overheated){
-    selfStarted = false;
-    engineRunning = true;
-    playSound(idleSound);
-    button.disabled = false;
+  if(sound){
+    sound.currentTime = 0;
+    sound.play().catch(()=>{});
   }
-});
+
+  function updateAudio(){
+    if(transition !== audioTransition) return;
+    const progress = Math.max(0, Math.min((performance.now() - startedAt) / duration, 1));
+    const fadeIn = Math.sin(progress * Math.PI / 2);
+    const fadeOut = Math.cos(progress * Math.PI / 2);
+    sounds.forEach((item, index)=>{
+      item.volume = item === sound
+        ? startingVolumes[index] + (AUDIO_MASTER_VOLUME - startingVolumes[index]) * fadeIn
+        : startingVolumes[index] * fadeOut;
+    });
+
+    if(progress < 1){
+      if(duration <= 16) setTimeout(updateAudio, 1);
+      else requestAnimationFrame(updateAudio);
+      return;
+    }
+    sounds.forEach(item=>{
+      if(item !== sound){
+        item.pause();
+        item.currentTime = 0;
+      }
+    });
+  }
+
+  if(duration <= 16) setTimeout(updateAudio, 1);
+  else requestAnimationFrame(updateAudio);
+}
+
+function scheduleCueHandoff(source, shouldHandoff, handoff){
+  let handoffTimer = null;
+  let handoffStarted = false;
+
+  function startHandoff(){
+    if(handoffStarted || !shouldHandoff()) return;
+    handoffStarted = true;
+    clearTimeout(handoffTimer);
+    handoffTimer = null;
+    handoff();
+  }
+
+  source.addEventListener("playing", ()=>{
+    clearTimeout(handoffTimer);
+    handoffStarted = false;
+    if(!shouldHandoff() || !Number.isFinite(source.duration)) return;
+    const remainingMs = (source.duration - source.currentTime) * 1000;
+    handoffTimer = setTimeout(startHandoff, Math.max(0, remainingMs - START_LOOP_OVERLAP_MS));
+  });
+
+  return startHandoff;
+}
+
+function playSound(sound, duration = AUDIO_CROSSFADE_MS){
+  if(overheated) return;
+  if(sound === loopSound || sound === loopSoundAlt){
+    loopActive = loopSound;
+    loopStandby = loopSoundAlt;
+  }
+  crossfadeTo(sound, duration);
+}
+
+function startLoopCue(){
+  if(!holding || overheated) return;
+  playSound(loopSound, START_LOOP_OVERLAP_MS);
+}
+
+function startIdleCue(){
+  if(!holding && !overheated) playSound(idleSound, START_LOOP_OVERLAP_MS);
+}
+
+function finishSelfCue(){
+  if(selfCueComplete || overheated) return;
+  selfCueComplete = true;
+  selfStarted = false;
+  engineRunning = true;
+  playSound(idleSound, START_LOOP_OVERLAP_MS);
+  button.disabled = false;
+}
+
+function continueSelfCue(source){
+  if(overheated) return;
+  if(selfHolding){
+    playSound(source === selfSound ? selfSoundAlt : selfSound, START_LOOP_OVERLAP_MS);
+  } else if(selfStarted){
+    finishSelfCue();
+  }
+}
+
+const startLoopHandoff = scheduleCueHandoff(startSound, ()=>holding && !overheated, startLoopCue);
+const releaseIdleHandoff = scheduleCueHandoff(releaseSound, ()=>!holding && !overheated, startIdleCue);
+const selfHandoff = source => scheduleCueHandoff(source, ()=>selfStarted && !overheated, ()=>continueSelfCue(source));
+const selfSoundHandoff = selfHandoff(selfSound);
+const selfSoundAltHandoff = selfHandoff(selfSoundAlt);
+
+startSound.addEventListener("ended", startLoopHandoff);
+releaseSound.addEventListener("ended", releaseIdleHandoff);
+selfSound.addEventListener("ended", selfSoundHandoff);
+selfSoundAlt.addEventListener("ended", selfSoundAltHandoff);
+function crossfadeLoopPass(){
+  const outgoing = loopActive;
+  const incoming = loopStandby;
+  const duration = Math.min(LOOP_CROSSFADE_MS, outgoing.duration * 500);
+  const outgoingVolume = Math.min(AUDIO_MASTER_VOLUME, outgoing.volume);
+  const startedAt = performance.now();
+  const transition = ++audioTransition;
+  loopFadeStarted = true;
+  incoming.currentTime = 0;
+  incoming.volume = 0;
+  incoming.play().catch(()=>{});
+
+  function updateLoopFade(){
+    if(transition !== audioTransition) return;
+    const progress = Math.max(0, Math.min((performance.now() - startedAt) / duration, 1));
+    const fadeIn = Math.sin(progress * Math.PI / 2);
+    const fadeOut = Math.cos(progress * Math.PI / 2);
+    outgoing.volume = outgoingVolume * fadeOut;
+    incoming.volume = AUDIO_MASTER_VOLUME * fadeIn;
+    if(progress < 1){
+      requestAnimationFrame(updateLoopFade);
+      return;
+    }
+    outgoing.pause();
+    outgoing.currentTime = 0;
+    loopActive = incoming;
+    loopStandby = outgoing;
+    loopFadeStarted = false;
+  }
+
+  requestAnimationFrame(updateLoopFade);
+}
+
+function checkAudioLoop(){
+  if(mode !== "loop" || !holding || overheated || loopFadeStarted) return;
+  if(!Number.isFinite(loopActive.duration) || loopActive.duration <= 0) return;
+  const fadeWindow = Math.min(0.8, loopActive.duration / 2);
+  if(loopActive.currentTime >= loopActive.duration - fadeWindow)
+    crossfadeLoopPass();
+}
+
+loopSound.addEventListener("timeupdate", checkAudioLoop);
+loopSoundAlt.addEventListener("timeupdate", checkAudioLoop);
 
 function triggerOverheat(){
   if(overheated) return;
@@ -178,19 +319,15 @@ function triggerOverheat(){
   selfButton.classList.remove("holding");
   selfButton.disabled = true;
   document.querySelector(".video-box").classList.remove("revving");
-  [idleSound, startSound, loopSound, releaseSound, selfSound, audio02].forEach(sound=>{
-    stopSound(sound);
-    sound.muted = true;
-  });
+  crossfadeTo(audio02, 500);
   status.textContent = "Engine overheated";
   video.pause();
   video.src = "video02.mp4";
+  video.muted = true;
+  video.volume = 0;
   video.currentTime = 0;
   video.load();
   video.play().catch(()=>{});
-  audio02.muted = false;
-  audio02.currentTime = 0;
-  audio02.play().catch(()=>{});
 }
 
 function updateHeat(now){
@@ -228,10 +365,6 @@ function startPress(){
   holding = true;
   button.classList.add("holding");
   document.querySelector(".video-box").classList.add("revving");
-  stopSound(idleSound);
-  stopSound(startSound);
-  stopSound(loopSound);
-  stopSound(releaseSound);
   playSound(startSound);
 
   clearTimeout(timer);
@@ -274,10 +407,6 @@ function release(){
   // Release section: 3.93 -> end
   mode = "release";
   document.querySelector(".video-box").classList.remove("revving");
-  stopSound(idleSound);
-  stopSound(startSound);
-  stopSound(loopSound);
-  stopSound(releaseSound);
   playSound(releaseSound);
   status.textContent = "Releasing...";
   video.currentTime = RELEASE_START;
@@ -320,10 +449,10 @@ function startSelf(){
   if(selfHolding || selfButton.disabled || holding || overheated) return;
   selfHolding = true;
   selfStarted = true;
+  selfCueComplete = false;
   mode = "self-loop";
   selfButton.classList.add("holding");
   button.disabled = true;
-  [idleSound, startSound, loopSound, releaseSound].forEach(stopSound);
   playSound(selfSound);
   video.currentTime = 0;
   video.play().catch(()=>{});
