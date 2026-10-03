@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bike Revving</title>
+<style>
+*{box-sizing:border-box}
+body{
+  margin:0; min-height:100vh; background:#111; color:#fff;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:22px; font-family:Arial,sans-serif; user-select:none;
+}
+.video-box{
+  width:min(900px,94vw); aspect-ratio:16/9; background:#000;
+  border-radius:16px; overflow:hidden;
+}
+.video-box.revving{animation:screen-vibration 20ms linear infinite}
+@keyframes screen-vibration{
+  0%,100%{transform:translate(0,0)}
+  25%{transform:translate(1px,-1px)}
+  50%{transform:translate(-1px,1px)}
+  75%{transform:translate(1px,1px)}
+}
+@media(prefers-reduced-motion:reduce){.video-box.revving{animation:none}}
+video{width:100%;height:100%;object-fit:contain;display:block}
+.heat-meter{width:min(420px,80vw);display:grid;grid-template-columns:1fr auto;align-items:center;gap:8px 12px}
+.heat-label{font-size:12px;font-weight:bold;color:#aaa}
+#heat-value{font-size:12px;font-variant-numeric:tabular-nums;color:#f2c94c}
+#heat-track{grid-column:1/-1;height:12px;background:#292929;border:1px solid #444;border-radius:8px;overflow:hidden}
+#heat-fill{width:0;height:100%;background:linear-gradient(90deg,#35c77a 0%,#f2c94c 58%,#e53935 100%)}
+.control-row{width:min(580px,96vw);display:flex;align-items:center;gap:14px}
+#rev{
+  flex:1; min-width:0; width:auto; min-height:70px; padding:20px 12px; border:0; border-radius:18px;
+  background:#e53935; color:#fff; font-size:27px; font-weight:bold;
+  box-shadow:0 8px 0 #9e2421; cursor:pointer; touch-action:none;
+}
+#rev.holding{transform:translateY(8px);box-shadow:0 0 0 #9e2421;background:#ff5252}
+#rev:disabled{opacity:.5;cursor:not-allowed}
+#self-start{
+  flex:0 0 108px; width:108px; height:108px; padding:10px; border:0; border-radius:50%;
+  display:grid; place-items:center; text-align:center; line-height:1.1;
+  background:#268a58; color:#fff; font-size:14px; font-weight:bold;
+  box-shadow:0 6px 0 #185d3b; cursor:pointer; touch-action:none;
+}
+#self-start.holding{transform:translateY(6px);box-shadow:0 0 0 #185d3b;background:#35a86f}
+#self-start:disabled{opacity:.5;cursor:not-allowed}
+#rpm-gauge{
+  --rpm-progress:0%; --rpm-color:#35c77a;
+  position:relative; flex:0 0 108px; width:108px; height:108px; border-radius:50%;
+  display:grid; place-items:center;
+  background:conic-gradient(from -90deg, var(--rpm-color) 0 var(--rpm-progress), #292929 var(--rpm-progress) 100%);
+}
+#rpm-gauge::before{content:"";position:absolute;inset:8px;border-radius:50%;background:#111}
+.rpm-center{position:relative;display:flex;flex-direction:column;align-items:center;gap:2px}
+#rpm-value{font-size:16px;font-weight:bold;font-variant-numeric:tabular-nums}
+.rpm-label{font-size:10px;font-weight:bold;color:#aaa}
+#status{color:#aaa}
+@media(max-width:420px){
+  .control-row{gap:8px}
+  #rev{min-height:64px;padding:16px 8px;font-size:17px}
+  #self-start{flex-basis:88px;width:88px;height:88px;font-size:12px}
+  #rpm-gauge{flex-basis:88px;width:88px;height:88px}
+  #rpm-gauge::before{inset:7px}
+  #rpm-value{font-size:14px}
+}
+</style>
+</head>
+<body>
+
+<div class="video-box">
+  <video id="bike" src="bike.mp4" preload="auto" playsinline></video>
+</div>
+<audio id="idleSound" src="idle.wav" preload="auto" loop></audio>
+<audio id="startSound" src="start.wav" preload="auto"></audio>
+<audio id="loopSound" src="Loop.wav" preload="auto" loop></audio>
+<audio id="releaseSound" src="sam.wav" preload="auto"></audio>
+<audio id="selfSound" src="sam02.wav" preload="auto"></audio>
+<audio id="audio02" src="audio02.mp3" preload="auto"></audio>
+
+<div class="heat-meter">
+  <span class="heat-label">Vibration!!! level</span>
+  <output id="heat-value">0%</output>
+  <div id="heat-track" role="meter" aria-label="Engine heat" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Cool, 0 percent">
+    <div id="heat-fill"></div>
+  </div>
+</div>
+<div class="control-row">
+  <button id="self-start">START</button>
+  <button id="rev">REV</button>
+  <div id="rpm-gauge" role="meter" aria-label="Engine speed" aria-valuemin="0" aria-valuemax="12000" aria-valuenow="0" aria-valuetext="0 RPM">
+    <div class="rpm-center"><output id="rpm-value">0</output><span class="rpm-label">RPM</span></div>
+  </div>
+</div>
+<div id="status">Press and hold the button</div>
+
+<script>
+const video = document.getElementById("bike");
+const button = document.getElementById("rev");
+const status = document.getElementById("status");
+const heatTrack = document.getElementById("heat-track");
+const heatFill = document.getElementById("heat-fill");
+const heatValue = document.getElementById("heat-value");
+const rpmGauge = document.getElementById("rpm-gauge");
+const rpmValue = document.getElementById("rpm-value");
+const idleSound = document.getElementById("idleSound");
+const startSound = document.getElementById("startSound");
+const loopSound = document.getElementById("loopSound");
+const releaseSound = document.getElementById("releaseSound");
+const selfButton = document.getElementById("self-start");
+const selfSound = document.getElementById("selfSound");
+const audio02 = document.getElementById("audio02");
+
+const START_END = 1.59;
+const LOOP_START = 2.1;
+const LOOP_END = 2.4;
+const RELEASE_START = 3.93;
+const SELF_VIDEO_LOOP_END = 0.3;
+
+let holding = false;
+let mode = "idle";
+let timer = null;
+let releaseTimer = null;
+let selfVideoTimer = null;
+let heat = 0;
+let rpm = 0;
+let lastHeatFrame = performance.now();
+let overheated = false;
+let selfHolding = false;
+let selfStarted = false;
+let engineRunning = false;
+
+video.pause();
+video.currentTime = 0;
+video.muted = true;
+button.disabled = true;
+
+function playSound(sound){
+  if(overheated) return;
+  sound.currentTime = 0;
+  sound.play().catch(()=>{});
+}
+
+function stopSound(sound){
+  sound.pause();
+  sound.currentTime = 0;
+}
+
+startSound.addEventListener("ended", ()=>{
+  if(holding && !overheated) playSound(loopSound);
+});
+releaseSound.addEventListener("ended", ()=>{
+  if(!holding && !overheated) playSound(idleSound);
+});
+selfSound.addEventListener("ended", ()=>{
+  if(selfHolding && !overheated) playSound(selfSound);
+  else if(selfStarted && !overheated){
+    selfStarted = false;
+    engineRunning = true;
+    playSound(idleSound);
+    button.disabled = false;
+  }
+});
+
+function triggerOverheat(){
+  if(overheated) return;
+  overheated = true;
+  engineRunning = false;
+  holding = false;
+  mode = "overheated";
+  clearTimeout(timer);
+  clearTimeout(releaseTimer);
+  clearTimeout(selfVideoTimer);
+  button.classList.remove("holding");
+  button.disabled = true;
+  selfHolding = false;
+  selfStarted = false;
+  selfButton.classList.remove("holding");
+  selfButton.disabled = true;
+  document.querySelector(".video-box").classList.remove("revving");
+  [idleSound, startSound, loopSound, releaseSound, selfSound, audio02].forEach(sound=>{
+    stopSound(sound);
+    sound.muted = true;
+  });
+  status.textContent = "Engine overheated";
+  video.pause();
+  video.src = "video02.mp4";
+  video.currentTime = 0;
+  video.load();
+  video.play().catch(()=>{});
+  audio02.muted = false;
+  audio02.currentTime = 0;
+  audio02.play().catch(()=>{});
+}
+
+function updateHeat(now){
+  const elapsed = Math.min((now - lastHeatFrame) / 1000, 0.1);
+  lastHeatFrame = now;
+  const targetRpm = overheated ? 0 : holding ? 12000 : engineRunning ? 1000 : 0;
+  if(rpm < targetRpm) rpm = Math.min(targetRpm, rpm + elapsed * 18000);
+  else if(rpm > targetRpm) rpm = Math.max(targetRpm, rpm - elapsed * 12000);
+  if(!overheated){
+    heat = Math.max(0, Math.min(100, heat + elapsed * (holding ? 5 : -8)));
+    if(heat >= 100) triggerOverheat();
+  }
+
+  const roundedHeat = Math.round(heat);
+  heatFill.style.width = `${heat}%`;
+  heatValue.value = `${roundedHeat}%`;
+  heatValue.textContent = `${roundedHeat}%`;
+  heatTrack.setAttribute("aria-valuenow", roundedHeat);
+  heatTrack.setAttribute("aria-valuetext", `${roundedHeat >= 70 ? "Hot" : roundedHeat >= 35 ? "Warm" : "Cool"}, ${roundedHeat} percent`);
+  const roundedRpm = Math.round(rpm);
+  rpmValue.value = String(roundedRpm);
+  rpmValue.textContent = String(roundedRpm);
+  rpmGauge.style.setProperty("--rpm-progress", `${rpm / 12000 * 50}%`);
+  rpmGauge.style.setProperty("--rpm-color", rpm >= 9600 ? "#e53935" : rpm >= 6500 ? "#f2c94c" : "#35c77a");
+  rpmGauge.setAttribute("aria-valuenow", roundedRpm);
+  rpmGauge.setAttribute("aria-valuetext", `${roundedRpm} RPM`);
+
+  requestAnimationFrame(updateHeat);
+}
+
+requestAnimationFrame(updateHeat);
+
+function startPress(){
+  if(holding) return;
+  holding = true;
+  button.classList.add("holding");
+  document.querySelector(".video-box").classList.add("revving");
+  stopSound(idleSound);
+  stopSound(startSound);
+  stopSound(loopSound);
+  stopSound(releaseSound);
+  playSound(startSound);
+
+  clearTimeout(timer);
+  clearTimeout(releaseTimer);
+  clearTimeout(selfVideoTimer);
+
+  // Start section: 0.00 -> 0.57
+  mode = "start";
+  status.textContent = "REVVING...";
+  video.currentTime = 0;
+  video.play().catch(()=>{});
+
+  timer = setTimeout(()=>{
+    if(!holding) return;
+
+    // Jump over 0.57 -> 0.93 and begin the rev loop.
+    mode = "loop";
+    status.textContent = "REVVING🔥🔥🔥...";
+    video.currentTime = LOOP_START;
+  }, START_END * 1000);
+}
+
+function loopCheck(){
+  if(mode === "self-loop" && video.currentTime >= SELF_VIDEO_LOOP_END){
+    video.currentTime = 0;
+  }
+  if(mode === "loop" && holding && video.currentTime >= LOOP_END){
+    video.currentTime = LOOP_START;
+  }
+}
+
+function release(){
+  if(!holding) return;
+  holding = false;
+  button.classList.remove("holding");
+
+  clearTimeout(timer);
+  clearTimeout(releaseTimer);
+
+  // Release section: 3.93 -> end
+  mode = "release";
+  document.querySelector(".video-box").classList.remove("revving");
+  stopSound(idleSound);
+  stopSound(startSound);
+  stopSound(loopSound);
+  stopSound(releaseSound);
+  playSound(releaseSound);
+  status.textContent = "Releasing...";
+  video.currentTime = RELEASE_START;
+  video.play().catch(()=>{});
+}
+
+video.addEventListener("timeupdate", loopCheck);
+
+video.addEventListener("ended", ()=>{
+  if(mode === "release" && !overheated){
+    mode = "stopped";
+    video.pause();
+    // Stay exactly at the last frame.
+    if(Number.isFinite(video.duration))
+      video.currentTime = Math.max(0, video.duration - 0.01);
+    status.textContent = "Stopped";
+  }
+});
+
+button.addEventListener("pointerdown", e=>{
+  e.preventDefault();
+  try{button.setPointerCapture(e.pointerId)}catch(_){}
+  startPress();
+});
+
+button.addEventListener("pointerup", e=>{
+  e.preventDefault();
+  release();
+});
+
+button.addEventListener("pointercancel", release);
+
+button.addEventListener("lostpointercapture", ()=>{
+  if(holding) release();
+});
+
+button.addEventListener("contextmenu", e=>e.preventDefault());
+
+function startSelf(){
+  if(selfHolding || selfButton.disabled || holding || overheated) return;
+  selfHolding = true;
+  selfStarted = true;
+  mode = "self-loop";
+  selfButton.classList.add("holding");
+  button.disabled = true;
+  [idleSound, startSound, loopSound, releaseSound].forEach(stopSound);
+  playSound(selfSound);
+  video.currentTime = 0;
+  video.play().catch(()=>{});
+  clearTimeout(selfVideoTimer);
+  selfVideoTimer = setTimeout(()=>{
+    if(mode === "self-loop"){
+      mode = "stopped";
+      video.pause();
+    }
+  }, 1000);
+}
+
+function stopSelf(){
+  if(!selfHolding) return;
+  selfHolding = false;
+  selfButton.classList.remove("holding");
+  selfButton.disabled = true;
+}
+
+selfButton.addEventListener("pointerdown", e=>{
+  e.preventDefault();
+  try{selfButton.setPointerCapture(e.pointerId)}catch(_){}
+  startSelf();
+});
+selfButton.addEventListener("pointerup", e=>{
+  e.preventDefault();
+  stopSelf();
+});
+selfButton.addEventListener("pointercancel", stopSelf);
+selfButton.addEventListener("lostpointercapture", stopSelf);
+selfButton.addEventListener("contextmenu", e=>e.preventDefault());
+</script>
+</body>
+</html>
